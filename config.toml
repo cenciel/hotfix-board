@@ -1,0 +1,6 @@
+[jira]
+base_url    = "https://soop-global.atlassian.net"
+project_key = "SOOPKR"
+email       = "dhpark@sooplive.com"
+api_token   = "api_token"
+jira_type   = "cloud"
