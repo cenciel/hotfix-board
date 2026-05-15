@@ -3,6 +3,8 @@ import re
 import tomllib
 from datetime import date, datetime
 from pathlib import Path
+import os
+from dotenv import load_dotenv
 
 import pandas as pd
 import plotly.express as px
@@ -76,6 +78,11 @@ def file_save(records: list[dict]):
 def jira_auth_headers(cfg: dict) -> dict:
     import base64
     jira  = cfg["jira"]
+    api_token = os.getenv("JIRA_API_TOKEN") 
+    
+    if not api_token:
+        st.error(".env 파일에서 JIRA_API_TOKEN을 찾을 수 없습니다.")
+        st.stop()
     token = base64.b64encode(
         f"{jira['email']}:{jira['api_token']}".encode()
     ).decode()
