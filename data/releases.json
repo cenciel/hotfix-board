@@ -1,5 +1,29 @@
 [
   {
+    "version": "8.25.3",
+    "date": "2026-05-14",
+    "hotfix": true,
+    "jira_url": "https://soop-global.atlassian.net/projects/SOOPKR/versions/15354/tab/release-report-all-issues",
+    "jira_id": "15354",
+    "jira_name": "[KR] 8.25.3-Android"
+  },
+  {
+    "version": "8.25.1",
+    "date": "2026-05-13",
+    "hotfix": true,
+    "jira_url": "https://soop-global.atlassian.net/projects/SOOPKR/versions/15352/tab/release-report-all-issues",
+    "jira_id": "15352",
+    "jira_name": "[KR] 8.25.1-Android"
+  },
+  {
+    "version": "8.25.2",
+    "date": "2026-05-13",
+    "hotfix": true,
+    "jira_url": "https://soop-global.atlassian.net/projects/SOOPKR/versions/15353/tab/release-report-all-issues",
+    "jira_id": "15353",
+    "jira_name": "[KR] 8.25.2-Android"
+  },
+  {
     "version": "8.25.0",
     "date": "2026-05-12",
     "hotfix": false,
