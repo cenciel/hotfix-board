@@ -19,6 +19,7 @@ st.set_page_config(
 )
 
 BASE_DIR  = Path(__file__).parent
+
 _env_path = BASE_DIR / ".env"
 load_dotenv(dotenv_path=_env_path, override=True)
 DATA_FILE = BASE_DIR / "data" / "releases.json"
@@ -31,11 +32,22 @@ CFG_FILE  = BASE_DIR / "config.toml"
 def load_config() -> dict:
     with open(CFG_FILE, "rb") as f:
         cfg = tomllib.load(f)
-    token = os.environ.get("JIRA_API_TOKEN", "").strip()
+
+    token = ""
+    try:
+        token = st.secrets["JIRA_API_TOKEN"].strip()
+    except Exception:
+        pass
+
+    if not token:
+        token = os.environ.get("JIRA_API_TOKEN", "").strip()
+
     if token:
         cfg["jira"]["api_token"] = token
+
     if not cfg["jira"].get("api_token"):
         cfg["jira"]["api_token"] = ""
+
     return cfg
 
 
@@ -55,7 +67,7 @@ def is_hotfix(version: str) -> bool:
 #  파일 I/O
 # ════════════════════════════════════════════════════════
 def file_load() -> list[dict]:
-    """releases.json → list. 없거나 비어있으면 빈 리스트"""
+    """releases.json → list. 없거나 비어있으면 빈 리스트."""
     if not DATA_FILE.exists():
         return []
     try:
@@ -69,7 +81,7 @@ def file_load() -> list[dict]:
 
 
 def file_save(records: list[dict]):
-    """날짜 내림차순 정렬 후 저장"""
+    """날짜 내림차순 정렬 후 저장."""
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     sorted_list = sorted(
         records,
@@ -78,6 +90,24 @@ def file_save(records: list[dict]):
     )
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted_list, f, ensure_ascii=False, indent=2)
+
+
+def version_sort_key(ver: str):
+    """버전 문자열을 정수 튜플로 변환 (정렬용). 예: "8.22.2" → (8, 22, 2)"""
+    try:
+        return tuple(int(x) for x in str(ver).split("."))
+    except Exception:
+        return (0, 0, 0)
+
+
+def file_load_sorted() -> list[dict]:
+    """file_load 후 날짜 내림차순, 같은 날짜는 버전 내림차순 정렬."""
+    records = file_load()
+    return sorted(
+        records,
+        key=lambda r: (r.get("date") or "0000-00-00", version_sort_key(r.get("version", "0"))),
+        reverse=True,
+    )
 
 
 # ════════════════════════════════════════════════════════
@@ -110,7 +140,7 @@ def fetch_and_merge(cfg: dict) -> tuple[int, int]:
     resp.raise_for_status()
 
     # ── 1. 기존 파일 통째로 읽기 ─────────────────────
-    existing_list = file_load()    
+    existing_list = file_load()        
     existing = {r["version"]: r for r in existing_list} 
     original_count = len(existing)
     added = 0
@@ -183,7 +213,7 @@ def fetch_and_merge(cfg: dict) -> tuple[int, int]:
 #  데이터프레임 빌드
 # ════════════════════════════════════════════════════════
 def build_df() -> pd.DataFrame:
-    records = file_load()
+    records = file_load_sorted() 
     if not records:
         return pd.DataFrame(
             columns=["version","date","hotfix","year","month",
@@ -200,7 +230,10 @@ def build_df() -> pd.DataFrame:
     if "jira_url" not in df.columns:
         df["jira_url"] = ""
     df["jira_url"]   = df["jira_url"].fillna("").astype(str)
-    df = df.sort_values("date", ascending=False).reset_index(drop=True)
+    df["_ver_key"] = df["version"].apply(version_sort_key)
+    df = df.sort_values(
+        ["date", "_ver_key"], ascending=[False, False]
+    ).drop(columns=["_ver_key"]).reset_index(drop=True)
     df["year"]       = df["date"].dt.year
     df["month"]      = df["date"].dt.month
     df["year_month"] = df["date"].dt.to_period("M")
@@ -428,7 +461,10 @@ def main():
     with col_f2:
         search = st.text_input("버전 검색", placeholder="예: 8.24")
 
-    df_log = df.sort_values("date", ascending=False).copy()
+    df["_ver_key"] = df["version"].apply(version_sort_key)
+    df_log = df.sort_values(
+        ["date", "_ver_key"], ascending=[False, False]
+    ).drop(columns=["_ver_key"]).reset_index(drop=True).copy()
 
     if log_filter == "핫픽스만":
         df_log = df_log[df_log["hotfix"] == True]
