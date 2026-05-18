@@ -3,4 +3,3 @@ plotly
 streamlit
 python-dateutil
 python-dotenv
-subprocess
