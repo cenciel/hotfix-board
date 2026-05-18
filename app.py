@@ -64,23 +64,56 @@ def is_hotfix(version: str) -> bool:
         return False
 
 
-def git_push_data_file():
-    """releases.json 변경 사항을 Git에 자동으로 커밋 및 푸시합니다."""
+def git_push_data_file() -> str:
+    """
+    Streamlit Cloud 및 로컬 환경 모두에서 작동하는 Git 자동 푸시 함수입니다.
+    Secrets나 환경변수에 등록된 깃 토큰을 사용하여 원격 저장소에 인증 후 푸시합니다.
+    """
+    git_token = ""
     try:
-        subprocess.run(["git", "add", str(DATA_FILE)], check=True, capture_output=True, text=True)
-        
-        commit_msg = f"chore: [Auto] 업데이트 releases.json - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        git_token = st.secrets["GIT_TOKEN"].strip()
+    except Exception:
+        pass
+    if not git_token:
+        git_token = os.environ.get("GIT_TOKEN", "").strip()
+
+    git_repo_url = ""
+    try:
+        git_repo_url = st.secrets["GIT_REPO_URL"].strip().replace("https://", "")
+    except Exception:
+        pass
+    if not git_repo_url:
+        git_repo_url = os.environ.get("GIT_REPO_URL", "").strip().replace("https://", "")
+
+    try:
+        subprocess.run(["git", "config", "user.name", "SOOP QA Bot"], check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "mobileqa_team@soop.co.kr"], check=True, capture_output=True)
+        subprocess.run(["git", "add", str(DATA_FILE)], check=True, capture_output=True)
         
         status_check = subprocess.run(["git", "status", "--porcelain", str(DATA_FILE)], capture_output=True, text=True)
         if not status_check.stdout.strip():
             return "변경 사항이 없어 Git 푸시를 건너뜁니다."
 
-        subprocess.run(["git", "commit", "-m", commit_msg], check=True, capture_output=True, text=True)
+        commit_msg = f"chore: [Auto] update releases.json - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        subprocess.run(["git", "commit", "-m", commit_msg], check=True, capture_output=True)
         
-        subprocess.run(["git", "push"], check=True, capture_output=True, text=True)
-        return "Git 푸시 성공"
+        if git_token and git_repo_url:
+            authenticated_url = f"https://{git_token}@{git_repo_url}"
+            subprocess.run(["git", "remote", "set-url", "origin", authenticated_url], check=True, capture_output=True)
+            
+            subprocess.run(["git", "push", "origin", "HEAD"], check=True, capture_output=True)
+            
+            subprocess.run(["git", "remote", "set-url", "origin", f"https://{git_repo_url}"], check=False, capture_output=True)
+            return "Git 자동 푸시 성공"
+        else:
+            subprocess.run(["git", "push"], check=True, capture_output=True)
+            return "로컬 자격 증명으로 Git 푸시 성공"
+            
     except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Git 작업 중 오류 발생: {e.stderr or e.stdout}")
+        error_msg = e.stderr.decode('utf-8') if e.stderr else (e.stdout.decode('utf-8') if e.stdout else str(e))
+        if git_token and git_token in error_msg:
+            error_msg = error_msg.replace(git_token, "********")
+        raise RuntimeError(f"Git 작업 실패: {error_msg}")
 
 
 # ════════════════════════════════════════════════════════
@@ -313,22 +346,22 @@ def main():
         )
         st.divider()
         st.markdown("#### 🔄 데이터 로드")
-        st.caption(f"Jira **{jira['project_key']}** Android 버전을 가져와 업데이트합니다.")
+        st.caption(f"Jira **{jira['project_key']}** Android 버전을 가져와 병합합니다.")
         load_clicked = st.button("📥 데이터 로드", type="primary", use_container_width=True)
 
-    # ── 버튼 처리 ─────────────────────────────────────
+    # ── 버튼 처리 (클라우드/로컬 통합 푸시 연동) ────────────────
     if load_clicked:
         with st.spinner("Jira에서 데이터 가져오는 중..."):
             try:
                 added, total = fetch_and_merge(cfg)
                 
-                with st.spinner("변경 사항을 Git 저장소에 푸시하는 중..."):
+                with st.spinner("변경 사항을 원격 Git 저장소에 푸시하는 중..."):
                     git_status = git_push_data_file()
                 
                 if added > 0:
-                    st.sidebar.success(f"✅ 신규 {added}건 추가 및 Git 푸시 완료 (전체 {total}건)")
+                    st.sidebar.success(f"✅ 신규 {added}건 추가 및 {git_status} (전체 {total}건)")
                 else:
-                    st.sidebar.info(f"ℹ️ {git_status} (전체 {total}건, 링크 업데이트 완료)")
+                    st.sidebar.info(f"ℹ️ {git_status} (전체 {total}건)")
             except requests.exceptions.HTTPError as e:
                 st.sidebar.error(f"❌ HTTP {e.response.status_code if e.response else '?'}: {e}")
                 st.stop()
