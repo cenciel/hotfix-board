@@ -1,16 +1,16 @@
 import json
+import os
 import re
 import tomllib
 from datetime import date, datetime
 from pathlib import Path
-import os
-from dotenv import load_dotenv
 
 import pandas as pd
 import plotly.express as px
 import requests
 import streamlit as st
 from dateutil.relativedelta import relativedelta
+from dotenv import load_dotenv
 
 st.set_page_config(
     page_title="SOOP 핫픽스 대시보드",
@@ -19,6 +19,8 @@ st.set_page_config(
 )
 
 BASE_DIR  = Path(__file__).parent
+_env_path = BASE_DIR / ".env"
+load_dotenv(dotenv_path=_env_path, override=True)
 DATA_FILE = BASE_DIR / "data" / "releases.json"
 CFG_FILE  = BASE_DIR / "config.toml"
 
@@ -28,7 +30,13 @@ CFG_FILE  = BASE_DIR / "config.toml"
 # ════════════════════════════════════════════════════════
 def load_config() -> dict:
     with open(CFG_FILE, "rb") as f:
-        return tomllib.load(f)
+        cfg = tomllib.load(f)
+    token = os.environ.get("JIRA_API_TOKEN", "").strip()
+    if token:
+        cfg["jira"]["api_token"] = token
+    if not cfg["jira"].get("api_token"):
+        cfg["jira"]["api_token"] = ""
+    return cfg
 
 
 # ════════════════════════════════════════════════════════
@@ -47,7 +55,7 @@ def is_hotfix(version: str) -> bool:
 #  파일 I/O
 # ════════════════════════════════════════════════════════
 def file_load() -> list[dict]:
-    """releases.json → list. 없거나 비어있으면 빈 리스트."""
+    """releases.json → list. 없거나 비어있으면 빈 리스트"""
     if not DATA_FILE.exists():
         return []
     try:
@@ -61,7 +69,7 @@ def file_load() -> list[dict]:
 
 
 def file_save(records: list[dict]):
-    """날짜 내림차순 정렬 후 저장."""
+    """날짜 내림차순 정렬 후 저장"""
     DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
     sorted_list = sorted(
         records,
@@ -78,11 +86,6 @@ def file_save(records: list[dict]):
 def jira_auth_headers(cfg: dict) -> dict:
     import base64
     jira  = cfg["jira"]
-    api_token = os.getenv("JIRA_API_TOKEN") 
-    
-    if not api_token:
-        st.error(".env 파일에서 JIRA_API_TOKEN을 찾을 수 없습니다.")
-        st.stop()
     token = base64.b64encode(
         f"{jira['email']}:{jira['api_token']}".encode()
     ).decode()
@@ -92,7 +95,6 @@ def jira_auth_headers(cfg: dict) -> dict:
 def fetch_and_merge(cfg: dict) -> tuple[int, int]:
     """
     Jira Android 버전 목록 가져와서 기존 데이터에 병합.
-    기존 데이터는 절대 삭제하지 않음.
     Returns: (신규 추가 건수, 전체 건수)
     """
     jira     = cfg["jira"]
@@ -108,7 +110,7 @@ def fetch_and_merge(cfg: dict) -> tuple[int, int]:
     resp.raise_for_status()
 
     # ── 1. 기존 파일 통째로 읽기 ─────────────────────
-    existing_list = file_load()        
+    existing_list = file_load()    
     existing = {r["version"]: r for r in existing_list} 
     original_count = len(existing)
     added = 0
@@ -141,6 +143,7 @@ def fetch_and_merge(cfg: dict) -> tuple[int, int]:
         ver = m.group(1)
 
         jira_url = f"{base_url}/projects/{proj_key}/versions/{ver_id}/tab/release-report-all-issues"
+
         hf = is_hotfix(ver) or "hotfix" in desc
 
         if ver not in existing:
@@ -188,7 +191,7 @@ def build_df() -> pd.DataFrame:
         )
     df = pd.DataFrame(records)
     df["date"]    = pd.to_datetime(df["date"], errors="coerce")
-    df            = df.dropna(subset=["date"])
+    df            = df.dropna(subset=["date"])  
     df["hotfix"]  = df.apply(
         lambda r: bool(r["hotfix"]) if r.get("hotfix") is not None and not pd.isna(r.get("hotfix"))
         else is_hotfix(r["version"]),
