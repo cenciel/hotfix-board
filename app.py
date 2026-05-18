@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import subprocess
 import tomllib
 from datetime import date, datetime
 from pathlib import Path
@@ -18,12 +19,12 @@ st.set_page_config(
     layout="wide",
 )
 
-BASE_DIR  = Path(__file__).parent
+BASE_DIR = Path(__file__).parent
 
 _env_path = BASE_DIR / ".env"
 load_dotenv(dotenv_path=_env_path, override=True)
 DATA_FILE = BASE_DIR / "data" / "releases.json"
-CFG_FILE  = BASE_DIR / "config.toml"
+CFG_FILE = BASE_DIR / "config.toml"
 
 
 # ════════════════════════════════════════════════════════
@@ -52,7 +53,7 @@ def load_config() -> dict:
 
 
 # ════════════════════════════════════════════════════════
-#  유틸
+#  유틸 및 Git 자동화
 # ════════════════════════════════════════════════════════
 def is_hotfix(version: str) -> bool:
     """버전 마지막 세그먼트 > 0 이면 핫픽스"""
@@ -63,9 +64,29 @@ def is_hotfix(version: str) -> bool:
         return False
 
 
+def git_push_data_file():
+    """releases.json 변경 사항을 Git에 자동으로 커밋 및 푸시합니다."""
+    try:
+        subprocess.run(["git", "add", str(DATA_FILE)], check=True, capture_output=True, text=True)
+        
+        commit_msg = f"chore: [Auto] 업데이트 releases.json - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        status_check = subprocess.run(["git", "status", "--porcelain", str(DATA_FILE)], capture_output=True, text=True)
+        if not status_check.stdout.strip():
+            return "변경 사항이 없어 Git 푸시를 건너뜁니다."
+
+        subprocess.run(["git", "commit", "-m", commit_msg], check=True, capture_output=True, text=True)
+        
+        subprocess.run(["git", "push"], check=True, capture_output=True, text=True)
+        return "Git 푸시 성공"
+    except subprocess.CalledProcessError as e:
+        raise RuntimeError(f"Git 작업 중 오류 발생: {e.stderr or e.stdout}")
+
+
 # ════════════════════════════════════════════════════════
 #  파일 I/O
 # ════════════════════════════════════════════════════════
+@st.cache_data(ttl=3600)  
 def file_load() -> list[dict]:
     """releases.json → list. 없거나 비어있으면 빈 리스트."""
     if not DATA_FILE.exists():
@@ -90,6 +111,8 @@ def file_save(records: list[dict]):
     )
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(sorted_list, f, ensure_ascii=False, indent=2)
+    
+    st.cache_data.clear()
 
 
 def version_sort_key(ver: str):
@@ -115,7 +138,7 @@ def file_load_sorted() -> list[dict]:
 # ════════════════════════════════════════════════════════
 def jira_auth_headers(cfg: dict) -> dict:
     import base64
-    jira  = cfg["jira"]
+    jira = cfg["jira"]
     token = base64.b64encode(
         f"{jira['email']}:{jira['api_token']}".encode()
     ).decode()
@@ -127,10 +150,10 @@ def fetch_and_merge(cfg: dict) -> tuple[int, int]:
     Jira Android 버전 목록 가져와서 기존 데이터에 병합.
     Returns: (신규 추가 건수, 전체 건수)
     """
-    jira     = cfg["jira"]
+    jira = cfg["jira"]
     base_url = jira["base_url"].rstrip("/")
     proj_key = jira["project_key"]
-    headers  = jira_auth_headers(cfg)
+    headers = jira_auth_headers(cfg)
 
     resp = requests.get(
         f"{base_url}/rest/api/3/project/{proj_key}/versions",
@@ -147,11 +170,11 @@ def fetch_and_merge(cfg: dict) -> tuple[int, int]:
 
     # ── 2. Jira 데이터 파싱 ──────────────────────────
     for v in resp.json():
-        name     = str(v.get("name", "")).strip()
+        name = str(v.get("name", "")).strip()
         rel_date = v.get("releaseDate", "")
-        ver_id   = str(v.get("id", ""))
+        ver_id = str(v.get("id", ""))
         released = v.get("released", False)
-        desc     = str(v.get("description", "")).lower()
+        desc = str(v.get("description", "")).lower()
 
         if not released:
             continue
@@ -187,10 +210,10 @@ def fetch_and_merge(cfg: dict) -> tuple[int, int]:
             }
             added += 1
         else:
-            existing[ver]["jira_url"]  = jira_url
-            existing[ver]["jira_id"]   = ver_id
+            existing[ver]["jira_url"] = jira_url
+            existing[ver]["jira_id"] = ver_id
             existing[ver]["jira_name"] = name
-            existing[ver]["hotfix"]    = hf
+            existing[ver]["hotfix"] = hf
 
     # ── 3. 기존 항목 hotfix/jira_url 필드 보정 ───────
     for r in existing.values():
@@ -212,6 +235,7 @@ def fetch_and_merge(cfg: dict) -> tuple[int, int]:
 # ════════════════════════════════════════════════════════
 #  데이터프레임 빌드
 # ════════════════════════════════════════════════════════
+@st.cache_data
 def build_df() -> pd.DataFrame:
     records = file_load_sorted() 
     if not records:
@@ -220,26 +244,25 @@ def build_df() -> pd.DataFrame:
                      "year_month","ym_str","jira_url"]
         )
     df = pd.DataFrame(records)
-    df["date"]    = pd.to_datetime(df["date"], errors="coerce")
-    df            = df.dropna(subset=["date"])  
-    df["hotfix"]  = df.apply(
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"])  
+    df["hotfix"] = df.apply(
         lambda r: bool(r["hotfix"]) if r.get("hotfix") is not None and not pd.isna(r.get("hotfix"))
         else is_hotfix(r["version"]),
         axis=1,
     )
     if "jira_url" not in df.columns:
         df["jira_url"] = ""
-    df["jira_url"]   = df["jira_url"].fillna("").astype(str)
+    df["jira_url"] = df["jira_url"].fillna("").astype(str)
     df["_ver_key"] = df["version"].apply(version_sort_key)
     df = df.sort_values(
         ["date", "_ver_key"], ascending=[False, False]
     ).drop(columns=["_ver_key"]).reset_index(drop=True)
-    df["year"]       = df["date"].dt.year
-    df["month"]      = df["date"].dt.month
+    df["year"] = df["date"].dt.year
+    df["month"] = df["date"].dt.month
     df["year_month"] = df["date"].dt.to_period("M")
-    df["ym_str"]     = df["date"].dt.strftime("%y/%m")
+    df["ym_str"] = df["date"].dt.strftime("%y/%m")
     return df
-
 
 
 # ════════════════════════════════════════════════════════
@@ -249,17 +272,17 @@ def predict_this_month(df: pd.DataFrame, today: date) -> dict:
     this_year, this_month = today.year, today.month
     this_mask = (df["year"] == this_year) & (df["month"] == this_month)
 
-    same_month  = df[(df["month"] == this_month) & ~this_mask]
-    rate_hist   = float(same_month["hotfix"].mean()) if len(same_month) > 0 else 0.0
-    rate_hist   = 0.0 if pd.isna(rate_hist) else rate_hist
+    same_month = df[(df["month"] == this_month) & ~this_mask]
+    rate_hist = float(same_month["hotfix"].mean()) if len(same_month) > 0 else 0.0
+    rate_hist = 0.0 if pd.isna(rate_hist) else rate_hist
 
-    cutoff_3m   = pd.Timestamp(today - relativedelta(months=3))
-    recent      = df[(df["date"] >= cutoff_3m) & ~this_mask]
+    cutoff_3m = pd.Timestamp(today - relativedelta(months=3))
+    recent = df[(df["date"] >= cutoff_3m) & ~this_mask]
     rate_recent = float(recent["hotfix"].mean()) if len(recent) > 0 else 0.0
     rate_recent = 0.0 if pd.isna(rate_recent) else rate_recent
 
     combined = rate_hist * 0.6 + rate_recent * 0.4
-    already  = df[this_mask & (df["hotfix"] == True)]
+    already = df[this_mask & (df["hotfix"] == True)]
 
     return {
         "pct":              round(combined * 100),
@@ -278,8 +301,8 @@ def predict_this_month(df: pd.DataFrame, today: date) -> dict:
 # ════════════════════════════════════════════════════════
 def main():
     today = date.today()
-    cfg   = load_config()
-    jira  = cfg["jira"]
+    cfg = load_config()
+    jira = cfg["jira"]
 
     # ── 사이드바 ──────────────────────────────────────
     with st.sidebar:
@@ -290,7 +313,7 @@ def main():
         )
         st.divider()
         st.markdown("#### 🔄 데이터 로드")
-        st.caption(f"Jira **{jira['project_key']}** Android 버전을 가져와 병합합니다.")
+        st.caption(f"Jira **{jira['project_key']}** Android 버전을 가져와 업데이트합니다.")
         load_clicked = st.button("📥 데이터 로드", type="primary", use_container_width=True)
 
     # ── 버튼 처리 ─────────────────────────────────────
@@ -298,10 +321,14 @@ def main():
         with st.spinner("Jira에서 데이터 가져오는 중..."):
             try:
                 added, total = fetch_and_merge(cfg)
+                
+                with st.spinner("변경 사항을 Git 저장소에 푸시하는 중..."):
+                    git_status = git_push_data_file()
+                
                 if added > 0:
-                    st.sidebar.success(f"✅ 신규 {added}건 추가 (전체 {total}건)")
+                    st.sidebar.success(f"✅ 신규 {added}건 추가 및 Git 푸시 완료 (전체 {total}건)")
                 else:
-                    st.sidebar.info(f"ℹ️ 신규 없음 (전체 {total}건, 링크 업데이트 완료)")
+                    st.sidebar.info(f"ℹ️ {git_status} (전체 {total}건, 링크 업데이트 완료)")
             except requests.exceptions.HTTPError as e:
                 st.sidebar.error(f"❌ HTTP {e.response.status_code if e.response else '?'}: {e}")
                 st.stop()
@@ -315,7 +342,7 @@ def main():
     with st.sidebar:
         st.divider()
         if len(df_all) > 0 and DATA_FILE.exists():
-            mtime  = datetime.fromtimestamp(DATA_FILE.stat().st_mtime)
+            mtime = datetime.fromtimestamp(DATA_FILE.stat().st_mtime)
             linked = int((df_all["jira_url"] != "").sum())
             hf_cnt = int(df_all["hotfix"].sum())
             st.caption(f"🕐 마지막 로드: **{mtime:%Y-%m-%d %H:%M}**")
@@ -331,8 +358,8 @@ def main():
 
     # ── 기간 필터 적용 ────────────────────────────────
     cutoff = pd.Timestamp(today - relativedelta(years=year_range))
-    df     = df_all[df_all["date"] >= cutoff].copy()
-    mtime  = datetime.fromtimestamp(DATA_FILE.stat().st_mtime)
+    df = df_all[df_all["date"] >= cutoff].copy()
+    mtime = datetime.fromtimestamp(DATA_FILE.stat().st_mtime)
 
     # ── 헤더 ──────────────────────────────────────────
     st.title("🔧 SOOP 핫픽스 대시보드")
@@ -343,11 +370,11 @@ def main():
     )
 
     # ── 지표 카드 ─────────────────────────────────────
-    total     = len(df)
-    hf_count  = int(df["hotfix"].sum())
+    total = len(df)
+    hf_count = int(df["hotfix"].sum())
     rel_count = total - hf_count
-    months_n  = max(year_range * 12, 1)
-    hf_rate   = hf_count / total * 100 if total > 0 else 0
+    months_n = max(year_range * 12, 1)
+    hf_rate = hf_count / total * 100 if total > 0 else 0
 
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("전체 릴리즈",    f"{total}건",        f"{year_range}년간")
@@ -359,10 +386,10 @@ def main():
     st.divider()
 
     # ── 이번달 예측 ───────────────────────────────────
-    pred          = predict_this_month(df, today)
-    pct           = pred["pct"]
+    pred = predict_this_month(df, today)
+    pct = pred["pct"]
     verdict_emoji = "🔴" if pct >= 60 else "🟡" if pct >= 35 else "🟢"
-    verdict_text  = "핫픽스 가능성 높음" if pct >= 60 else "보통 수준" if pct >= 35 else "핫픽스 가능성 낮음"
+    verdict_text = "핫픽스 가능성 높음" if pct >= 60 else "보통 수준" if pct >= 35 else "핫픽스 가능성 낮음"
 
     with st.container(border=True):
         st.subheader(f"📊 {today.strftime('%Y년 %m월')} 핫픽스 전망")
@@ -402,7 +429,7 @@ def main():
     month_order = monthly.sort_values("year_month")["ym_str"].unique().tolist()
 
     chart_type = st.radio("차트 유형", ["누적 막대", "선형"], horizontal=True)
-    color_map  = {"핫픽스": "#E24B4A", "정식 릴리즈": "#378ADD"}
+    color_map = {"핫픽스": "#E24B4A", "정식 릴리즈": "#378ADD"}
 
     fig = px.bar(
         monthly, x="ym_str", y="count", color="type",
@@ -426,7 +453,7 @@ def main():
 
     # ── 연도별 차트 ───────────────────────────────────
     st.subheader("📈 연도별 월평균 핫픽스")
-    df_hf  = df[df["hotfix"] == True].copy()
+    df_hf = df[df["hotfix"] == True].copy()
     if len(df_hf) > 0:
         yearly = (
             df_hf.groupby(["year", "year_month"]).size().reset_index(name="n")
@@ -480,10 +507,10 @@ def main():
         "Jira": [u if u else None for u in df_log["jira_url"].values],
     })
 
-    row_h    = 35
+    row_h = 35
     header_h = 36
     max_rows = 15
-    tbl_h    = header_h + row_h * min(len(df_disp), max_rows)
+    tbl_h = header_h + row_h * min(len(df_disp), max_rows)
 
     st.dataframe(
         df_disp,
